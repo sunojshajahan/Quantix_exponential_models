@@ -1,0 +1,967 @@
+---
+title: "Exponential models with Quantix imagery"
+author: "S. Sunoj"
+date: "3/15/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load packages
+```{r, message=FALSE}
+# rm(list = ls())
+ library(tictoc)  # to monitor time
+
+library(raster) # read raster files
+library(rgdal) # Use GDAL functions
+library(exactextractr) # Zonal statistics from raster
+library(sf) # Working with shapefile layers
+
+library(tidyverse) # data wrangling
+library(plyr) # data wrangling
+library(dplyr) # data wrangling
+
+library(ggpmisc) # To place geom_text within plot
+# library(ggmap) # Plot leaflet
+# library(ggplot2) # Visualizations
+library(plotly) # Interactive visualization
+
+print("Packages loaded successfully!")
+
+```
+
+# Functions specific to this RMD
+```{r, echo=FALSE}
+#########################################
+# Creating function for exponential fit
+myexpfit <- function(response_var, pred_var, mydata){
+  # print(paste0("Model = ", "log(",response_var, ")~", pred_var))
+  model.linear <- lm(paste0("log(",response_var, ")~", pred_var), data = mydata)
+   a1 <- exp(model.linear$coefficients[1])
+   b1 <- (model.linear$coefficients[2])
+   R2 <- summary(model.linear)$r.squared
+
+   myresults <- c(a1, b1, R2)
+   return(myresults)
+}
+#########################################
+
+# My GGPLOT for yield map
+my_yield_plot <- function(yield_df){
+  fieldtitle <- levels(yield_df$Fieldname)
+  # Legend labeling - Splitting the yield range into equal classes
+  minyld <- round(min(yield_df$Yield_Mg.ha),0) # minimum yield 
+  maxyld <- round(max(yield_df$Yield_Mg.ha),0) # maximum yield
+  Nclasses <- 4      # Number of yield classes to split from the whole yield range
+  
+  mybreaks <- round(seq(minyld, maxyld, len = (Nclasses+1)),0)
+  YE_colors <-  c("blue","cyan","lightgreen","yellow","orange", "red")
+
+  yld_plot <- ggplot(yield_df, aes(x = Longitude, y = Latitude)) +
+  geom_point(aes(color = Yield_Mg.ha), size = 0.7) +    
+      theme_bw() +
+      # facet_grid(Field~Year, scales = "free") +
+      theme(aspect.ratio = 1.0) +
+      ggtitle("Actual yield (Mg/ha)")+
+      facet_wrap(~Fieldname, scales = "free") +
+      # theme(legend.position = c(0.85, 0.27))+
+      scale_colour_gradientn(colours = YE_colors,  
+                             name = "Yield (Mg/ha)", 
+                             limits=c(minyld,maxyld),
+                             breaks = mybreaks,
+                             labels = round(mybreaks, 0)) +
+    guides(colour = guide_colourbar(barheight = unit(1.8, "in")))+
+    theme(panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(), 
+            axis.title.x = element_blank(),
+            axis.title.y = element_blank(),
+            axis.text.x = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks = element_blank(), 
+            plot.title = element_text(size=14, face = "bold")) +
+      theme(legend.title = element_text(face = "bold", size=8, margin = margin(0,0,7,0)),
+            legend.text = element_text(vjust = 0.5),
+            strip.text = element_text(face = "bold", size = 10))
+  yld_plot
+  
+}
+
+#########################################
+my_pred_plot <- function(sub_dat){
+  fieldtitle <- levels(sub_dat$Fieldname)
+    # Legend labeling - Splitting the yield range into equal classes
+  minyld <- round(min(sub_dat$Pred_Yield),0) # minimum yield 
+  maxyld <- round(max(sub_dat$Pred_Yield),0) # maximum yield
+  Nclasses <- 4      # Number of yield classes to split from the whole yield range
+    
+  mybreaks <- round(seq(minyld, maxyld, len = (Nclasses+1)),0)
+  YE_colors <-  c("blue","cyan","lightgreen","yellow","orange", "red")
+
+  pred_map <- ggplot(sub_dat, aes(x = Longitude, y = Latitude)) +
+        geom_point(aes(color = Pred_Yield), size = 0.7) +    
+        theme_bw() +
+        # facet_grid(Field~Year, scales = "free") +
+        theme(aspect.ratio = 1.0) +
+        ggtitle("Predicted yield (Mg/ha)")+
+        facet_wrap(~Fieldname, scales = "free") +
+        # theme(legend.position = c(0.85, 0.27))+
+        scale_colour_gradientn(colours = YE_colors,  
+                               name = "Yield (Mg/ha)", 
+                               limits=c(minyld,maxyld),
+                               breaks = mybreaks,
+                               labels = round(mybreaks, 0)) +
+        guides(colour = guide_colourbar(barheight = unit(1.8, "in")))+
+        theme(panel.grid.major = element_blank(),
+              panel.grid.minor = element_blank(), 
+              axis.title.x = element_blank(),
+              axis.title.y = element_blank(),
+              axis.text.x = element_blank(),
+              axis.text.y = element_blank(),
+              axis.ticks = element_blank(), 
+              plot.title = element_text(size=14, face = "bold")) +
+        theme(legend.title = element_text(face = "bold", size=8, margin = margin(0,0,7,0)),
+              legend.text = element_text(vjust = 0.5),
+              strip.text = element_text(face = "bold", size = 10))
+  pred_map
+}
+#==============
+
+
+
+```
+
+# Load dataset
+```{r, message=FALSE, warning=FALSE}
+
+# dat <- read.csv("deep-learning-all-features.csv", header = TRUE)
+# save(dat, file = "Quantix_deep_learning.RData")
+
+load("Quantix_deep_learning.RData", verbose = TRUE)
+
+str(dat)
+# colnames(dat)[5] <- "Latitude"
+# colnames(dat)[6] <- "Longitude"
+
+# save(dat, file = "Quantix_deep_learning.RData")
+
+```
+# Data preprocessing
+## Check for missing values
+```{r}
+# Check if any columns have missing values 
+sapply(dat, anyNA)
+
+# Names of columns that has missing values
+names(dat)[sapply(dat, anyNA)]
+
+```
+
+# Plot individual field yield data
+```{r}
+
+# "DMD_GH1" "PSF_111" "PSF_12"  "SLS_ABH" "SLS_NS"  "SSF_121" "SSF_202" "SSF_66"
+selfield <- "DMD_GH1"
+
+sub_dat <- dat %>%
+  dplyr::filter(Fieldname == selfield) %>%
+  droplevels()
+
+# Legend labeling - Splitting the yield range into equal classes
+minyld <- round(min(sub_dat$Yield_Mg.ha),0) # minimum yield 
+maxyld <- round(max(sub_dat$Yield_Mg.ha),0) # maximum yield
+Nclasses <- 4      # Number of yield classes to split from the whole yield range
+
+mybreaks <- round(seq(minyld, maxyld, len = (Nclasses+1)),0)
+YE_colors <-  c("blue","cyan","lightgreen","yellow","orange", "red")
+
+my_yield_plot(sub_dat)
+
+# png_save_name <- paste(selfield, "_", "allYear", ".png", sep = "")
+# 
+# wd <- 8.5
+# ht <- 3 
+# ggsave(png_save_name, width = wd, height = ht, unit = "in")
+
+```
+
+# Plot all yield data
+```{r}
+g_dat <- dat %>%
+  dplyr::filter(Type == "grain") %>%
+  droplevels()
+
+my_yield_plot(g_dat)
+
+s_dat <- dat %>%
+  dplyr::filter(Type == "silage") %>%
+  droplevels()
+
+my_yield_plot(s_dat)
+
+```
+
+# Exploratory data analysis
+## Distribution plots
+```{r}
+# Violin plot
+
+vplt <- ggplot(dat, aes(x = Fieldname, y = Yield_Mg.ha, fill = Fieldname)) +
+  geom_violin() +
+  theme_bw() +
+  facet_wrap(~Type, nrow = 2, scales = "free_y")
+
+vplt
+
+
+dplt <- ggplot(dat, aes(x = Yield_Mg.ha, y = ..scaled.., fill = Fieldname)) +
+  # geom_violin() +
+  geom_density(alpha = 0.4, size = 1) + 
+  theme_bw() +
+  facet_wrap(~Type, nrow = 2, scales = "free")
+
+dplt
+
+
+```
+
+## GPS points vs yield
+```{r}
+
+# "DMD_GH1" "PSF_111" "PSF_12"  "SLS_ABH" "SLS_NS"  "SSF_121" "SSF_202" "SSF_66"
+# selfield <- "DMD_GH1"
+
+sub_datf <- dat %>% 
+  filter(Week == 1 & Type == "grain") %>% 
+  droplevels()
+
+# Legend labeling - Splitting the yield range into equal classes
+minyld <- round(min(sub_datf$Yield_Mg.ha),0) # minimum yield 
+maxyld <- round(max(sub_datf$Yield_Mg.ha),0) # maximum yield
+Nclasses <- 4      # Number of yield classes to split from the whole yield range
+
+mybreaks <- round(seq(minyld, maxyld, len = (Nclasses+1)),0)
+YE_colors <-  c("blue","cyan","lightgreen","yellow","orange", "red")
+
+#=====================
+lat_plot <- ggplot(sub_datf, aes(x = Latitude, y = Yield_Mg.ha)) +
+  geom_point(aes(color = Yield_Mg.ha), size = 0.7) +    
+      theme_bw() +
+      # facet_grid(Field~Year, scales = "free") +
+      theme(aspect.ratio = 1.0) +
+      ggtitle("Latitude vs Yield")+
+      facet_wrap(~Fieldname, scales = "free") +
+      # theme(legend.position = c(0.85, 0.27))+
+      scale_colour_gradientn(colours = YE_colors,  
+                             name = "Yield (Mg/ha)", 
+                             limits=c(minyld,maxyld),
+                             breaks = mybreaks,
+                             labels = round(mybreaks, 0)) +
+    guides(colour = guide_colourbar(barheight = unit(1.8, "in")))+
+    theme(panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(), 
+            # axis.title.x = element_blank(), 
+            # axis.title.y = element_blank(),
+            # axis.text.x = element_blank(), 
+            # axis.text.y = element_blank(), 
+            axis.ticks = element_blank(), 
+            plot.title = element_text(size=14, face = "bold")) +
+      theme(legend.title = element_text(face = "bold", size=8, margin = margin(0,0,7,0)),
+            legend.text = element_text(vjust = 0.5),
+            strip.text = element_text(face = "bold", size = 10))
+lat_plot
+
+#=====================
+long_plot <- ggplot(sub_datf, aes(x = Longitude, y = Yield_Mg.ha)) +
+  geom_point(aes(color = Yield_Mg.ha), size = 0.7) +    
+      theme_bw() +
+      # facet_grid(Field~Year, scales = "free") +
+      theme(aspect.ratio = 1.0) +
+      ggtitle("Longitude vs Yield")+
+      facet_wrap(~Fieldname, scales = "free") +
+      # theme(legend.position = c(0.85, 0.27))+
+      scale_colour_gradientn(colours = YE_colors,  
+                             name = "Yield (Mg/ha)", 
+                             limits=c(minyld,maxyld),
+                             breaks = mybreaks,
+                             labels = round(mybreaks, 0)) +
+    guides(colour = guide_colourbar(barheight = unit(1.8, "in")))+
+    theme(panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(), 
+            # axis.title.x = element_blank(), 
+            # axis.title.y = element_blank(),
+            # axis.text.x = element_blank(), 
+            # axis.text.y = element_blank(), 
+            axis.ticks = element_blank(), 
+            plot.title = element_text(size=14, face = "bold")) +
+      theme(legend.title = element_text(face = "bold", size=8, margin = margin(0,0,7,0)),
+            legend.text = element_text(vjust = 0.5),
+            strip.text = element_text(face = "bold", size = 10))
+long_plot
+
+
+```
+#-----------------------------
+# Approach 1
+## 1.a. Use only strip data for exponential model
+```{r}
+
+# "DMD_GH1" "PSF_111" "PSF_12"  "SLS_ABH" "SLS_NS"  "SSF_121" "SSF_202" "SSF_66"
+# "1"  "2"  "3"  "4"  "5"  "6"  "7"  "8"  "9"  "10" "11" "12" "13" "14"
+# Best grain field - DMD_GH1
+# Best sialge filed - SSF_121, PSF_12
+
+selfield <- "DMD_GH1"
+# seltype <- "silage"
+
+sub_dat <- dat %>% 
+  filter(!is.na(N) & Fieldname == selfield) %>% 
+  droplevels()
+
+my_yield_plot(sub_dat)
+
+# "1"  "2"  "3"  "4"  "5"  "6"  "7"  "8"  "9"  "10" "11" "12" "13" "14"
+lvl <- levels(sub_dat$Week)
+sub_dat$Strip <- as.numeric(sub_dat$Strip)
+
+# NDVI, GNDVI, EXG, EVI2, EVI, SR, TGI, 
+#==============
+# Scatter plot between NDVI and Yield
+sct_plt <- ggplot(sub_dat, aes(x = NDVI, y = Yield_Mg.ha)) + 
+  geom_point(aes(color = Week)) +
+  theme_bw() + 
+  theme(aspect.ratio = 1) +
+  xlab("NDVI") + 
+  ylab("Yield (Mg/ha)") + 
+  xlim(c(0.0, 1.0))
+
+sct_plt
+#==============
+
+r2df <- data.frame()
+for (i in 1:length(lvl)){
+  # print(i)
+  wsub_dat <- sub_dat %>% 
+    filter(Week == lvl[i]) %>%
+    droplevels()
+  
+  mod <- myexpfit("Yield_Mg.ha", "NDVI", wsub_dat)
+  
+  ## RMSE calculation ======
+  a_fit <- as.numeric(mod[1])
+  b_fit <- as.numeric(mod[2])
+  rsq <- as.numeric(mod[3])
+  
+  ssub_dat <- dat %>% 
+    filter(Week == lvl[i] & Fieldname == selfield) %>% 
+    droplevels() 
+    
+  ssub_dat$Pred_Yield <-  a_fit*exp(b_fit*ssub_dat$NDVI)
+
+  ssub_dat$error <- (ssub_dat$Pred_Yield - ssub_dat$Yield_Mg.ha)
+  sqe <- (ssub_dat$error^2)
+  mse <- mean(sqe)
+  rmse_week <- sqrt(mse)
+  cat(lvl[i], ") a_fit = ", a_fit, "; b_fit = ", b_fit, ";\t R2 = ", rsq,";\t RMSE = ", rmse_week, "\n")
+  # cat("RMSE for", selfield, "on week", lvl[i], "is", rmse, "Mg/ha")
+  ## ========================
+  
+  r2 <- as.numeric(c(lvl[i], mod[1], mod[2], mod[3], rmse_week))
+  r2df <- rbind(r2df, r2)
+  # print(paste0(i, " = ", mod[3]))
+}
+
+colnames(r2df) <- c("Weeks", "a", "b", "R2", "RMSE")
+str(r2df)
+
+#============================
+## Pick the best week
+# best_week <- which.max(r2df$R2)
+best_week <- which.min(r2df$RMSE)
+  
+sub_dat1 <- dat %>% 
+  filter(Week == best_week & Fieldname == selfield) %>% 
+  droplevels()
+
+a_coeff <- r2df[best_week, 2]
+b_coeff <- r2df[best_week, 3]
+
+cat("a_best = ", a_coeff, "; b_best = ", b_coeff)
+
+sub_dat1$Pred_Yield <-  a_coeff*exp(b_coeff*sub_dat1$NDVI)
+
+my_pred_plot(sub_dat1)
+my_yield_plot(sub_dat1)
+
+sub_dat1$error <- (sub_dat1$Pred_Yield - sub_dat1$Yield_Mg.ha)
+mse <- mean(sub_dat1$error^2)
+rmse <- sqrt(mse)
+cat("RMSE for", selfield, "on week", best_week, "is", rmse, "Mg/ha")
+
+#======================
+# Secondary axis plot
+d  <- r2df
+x  <- 'Weeks'
+y1 <- 'R2'
+y2 <- 'RMSE'
+
+a            <- range(d[[y1]])
+b            <- range(d[[y2]])
+scale_factor <- diff(a)/diff(b)
+d[[y2]]      <- ((d[[y2]] - b[1]) * scale_factor) + a[1]
+
+trans <- ~ ((. - a[1]) / scale_factor) + b[1]
+
+r2_rmse_plt <- ggplot(d) +
+              geom_point(aes_string(x, y1)) + 
+              geom_line(aes_string(x, y1)) + 
+              geom_point(aes_string(x, y2), col='red') + 
+              geom_line(aes_string(x, y2), col='red') +
+              ggtitle(selfield) + 
+              theme_bw()+
+              theme(legend.position = c(0.8, 0.7)) + 
+              scale_x_continuous(breaks = seq(1,15, 1))+
+              scale_y_continuous(sec.axis = sec_axis(trans=trans, name=y2))
+
+r2_rmse_plt
+
+ggplotly(r2_rmse_plt)
+```
+
+## 1.b. Use 10 and 90 percentile of strip data
+```{r}
+# "DMD_GH1" "PSF_111" "PSF_12"  "SLS_ABH" "SLS_NS"  "SSF_121" "SSF_202" "SSF_66"
+selfield <- "DMD_GH1"
+
+sub_dat <- dat %>% 
+  filter(!is.na(N) & Fieldname == selfield) %>% 
+  droplevels()
+
+my_yield_plot(sub_dat)
+
+# Evaluate qunatile cutoffs
+pert <- 0.10
+
+cutoffs <- quantile(sub_dat$Yield_Mg.ha, c(pert, (1-pert)))
+cat("Cutoff for field", selfield, " =", cutoffs)
+
+# Subset points within cutoff
+qsub_dat <- sub_dat %>% 
+  filter(Yield_Mg.ha <= cutoffs[[1]] | Yield_Mg.ha >= cutoffs[[2]]) %>% 
+  droplevels()
+
+my_yield_plot(qsub_dat)
+
+#==============
+# Scatter plot between NDVI and Yield
+sct_plt <- ggplot(qsub_dat, aes(x = NDVI, y = Yield_Mg.ha)) + 
+  geom_point(aes(color = Week)) +
+  theme_bw() + 
+  theme(aspect.ratio = 1) +
+  xlab("NDVI") + 
+  ylab("Yield (Mg/ha)") + 
+  xlim(c(0.0, 1.0))
+
+sct_plt
+#==============
+
+lvl <- levels(qsub_dat$Week)
+
+r2df <- data.frame()
+for (i in 1:length(lvl)){
+  # print(i)
+  wsub_dat <- qsub_dat %>% 
+    filter(Week == lvl[i]) %>%
+    droplevels()
+  
+  mod <- myexpfit("Yield_Mg.ha", "NDVI", wsub_dat)
+  
+  ## RMSE calculation ======
+  a_fit <- as.numeric(mod[1])
+  b_fit <- as.numeric(mod[2])
+  rsq <- as.numeric(mod[3])
+  
+  ssub_dat <- dat %>% 
+    filter(Week == lvl[i] & Fieldname == selfield) %>% 
+    droplevels() 
+    
+  ssub_dat$Pred_Yield <-  a_fit*exp(b_fit*ssub_dat$NDVI)
+
+  ssub_dat$error <- (ssub_dat$Pred_Yield - ssub_dat$Yield_Mg.ha)
+  sqe <- (ssub_dat$error^2)
+  mse <- mean(sqe)
+  rmse_week <- sqrt(mse)
+  cat(lvl[i], ") a_fit = ", a_fit, "; b_fit = ", b_fit, ";\t R2 = ", rsq,";\t RMSE = ", rmse_week, "\n")
+  # cat("RMSE for", selfield, "on week", lvl[i], "is", rmse, "Mg/ha")
+  ## ========================
+  
+  r2 <- as.numeric(c(lvl[i], mod[1], mod[2], mod[3], rmse_week))
+  r2df <- rbind(r2df, r2)
+  # print(paste0(i, " = ", mod[3]))
+}
+
+colnames(r2df) <- c("Weeks", "a", "b", "R2", "RMSE")
+str(r2df)
+
+
+num_cols <- c("Weeks", "a", "b", "R2")
+r2df[num_cols] <- lapply(r2df[num_cols], as.numeric)
+
+r2plot <- ggplot(r2df, aes(x = Weeks, y = R2)) +
+  geom_point(size = 2) +
+  geom_line() +
+  theme_bw() + 
+  ggtitle(paste0(pert*100, "% and ", (1-pert)*100, "% data from N strips")) + 
+  scale_y_continuous(breaks = seq(0,1.0, 0.1)) +
+  scale_x_continuous(breaks = seq(1,15, 1))
+
+# r2plot
+ggplotly(r2plot)
+
+#==========================================
+## Select best week and evaluate RMSE
+best_week <- which.max(r2df$R2)
+
+sub_dat2 <- dat %>% 
+  filter(Week == best_week & Fieldname == selfield)
+
+a_coeff <- r2df[best_week, 2]
+b_coeff <- r2df[best_week, 3]
+
+sub_dat2$Pred_Yield <-  a_coeff*exp(b_coeff*sub_dat2$NDVI)
+my_yield_plot(sub_dat2)
+my_pred_plot(sub_dat2)
+
+sub_dat2$error <- (sub_dat2$Pred_Yield - sub_dat2$Yield_Mg.ha)
+se <- (sub_dat2$error^2)
+mse <- mean(se)
+rmse <- sqrt(mse)
+cat("RMSE for", selfield, "on week", best_week, "is", rmse, "Mg/ha")
+
+#======================
+# Secondary axis plot
+d  <- r2df
+x  <- 'Weeks'
+y1 <- 'R2'
+y2 <- 'RMSE'
+
+a            <- range(d[[y1]])
+b            <- range(d[[y2]])
+scale_factor <- diff(a)/diff(b)
+d[[y2]]      <- ((d[[y2]] - b[1]) * scale_factor) + a[1]
+
+trans <- ~ ((. - a[1]) / scale_factor) + b[1]
+
+r2_rmse_plt <- ggplot(d) +
+              geom_point(aes_string(x, y1)) + 
+              geom_line(aes_string(x, y1)) + 
+              geom_point(aes_string(x, y2), col='red') + 
+              geom_line(aes_string(x, y2), col='red') +
+              ggtitle(selfield) + 
+              theme_bw()+
+              theme(legend.position = c(0.8, 0.7)) + 
+              scale_x_continuous(breaks = seq(1,15, 1))+
+              scale_y_continuous(sec.axis = sec_axis(trans=trans, name=y2))
+
+# r2_rmse_plt
+ggplotly(r2_rmse_plt)
+
+```
+
+# Approach 2
+## 2.a. Use whole data without strip (select N == NA)
+```{r}
+# "DMD_GH1" "PSF_111" "PSF_12"  "SLS_ABH" "SLS_NS"  "SSF_121" "SSF_202" "SSF_66"
+selfield <- "DMD_GH1"
+
+sub_dat <- dat %>% 
+  filter(is.na(N) & Fieldname == selfield) %>% 
+  droplevels()
+
+my_yield_plot(sub_dat)
+
+#==============
+# Scatter plot between NDVI and Yield
+sct_plt <- ggplot(sub_dat, aes(x = NDVI, y = Yield_Mg.ha)) + 
+  geom_point(aes(color = Week)) +
+  theme_bw() + 
+  theme(aspect.ratio = 1) +
+  xlab("NDVI") + 
+  ylab("Yield (Mg/ha)") + 
+  xlim(c(0.0, 1.0))
+
+sct_plt
+#==============
+
+lvl <- levels(sub_dat$Week)
+
+r2df <- data.frame()
+for (i in 1:length(lvl)){
+  # print(i)
+  wsub_dat <- sub_dat %>% 
+    filter(Week == lvl[i]) %>%
+    droplevels()
+  
+  mod <- myexpfit("Yield_Mg.ha", "NDVI", wsub_dat)
+  
+  ## RMSE calculation ======
+  a_fit <- as.numeric(mod[1])
+  b_fit <- as.numeric(mod[2])
+  rsq <- as.numeric(mod[3])
+  
+  ssub_dat <- dat %>% 
+    filter(Week == lvl[i] & Fieldname == selfield) %>% 
+    droplevels() 
+    
+  ssub_dat$Pred_Yield <-  a_fit*exp(b_fit*ssub_dat$NDVI)
+
+  ssub_dat$error <- (ssub_dat$Pred_Yield - ssub_dat$Yield_Mg.ha)
+  sqe <- (ssub_dat$error^2)
+  mse <- mean(sqe)
+  rmse_week <- sqrt(mse)
+  cat(lvl[i], ") a_fit = ", a_fit, "; b_fit = ", b_fit, ";\t R2 = ", rsq,";\t RMSE = ", rmse_week, "\n")
+  # cat("RMSE for", selfield, "on week", lvl[i], "is", rmse, "Mg/ha")
+  ## ========================
+  
+  r2 <- as.numeric(c(lvl[i], mod[1], mod[2], mod[3], rmse_week))
+  r2df <- rbind(r2df, r2)
+  # print(paste0(i, " = ", mod[3]))
+}
+
+colnames(r2df) <- c("Weeks", "a", "b", "R2", "RMSE")
+str(r2df)
+
+#==========================================
+## Select best week and evaluate RMSE
+best_week <- which.max(r2df$R2)
+
+sub_dat3 <- dat %>% 
+  filter(Week == best_week & Fieldname == selfield)
+
+a_coeff <- r2df[best_week, 2]
+b_coeff <- r2df[best_week, 3]
+
+sub_dat3$Pred_Yield <-  a_coeff*exp(b_coeff*sub_dat3$NDVI)
+
+sub_dat3$error <- (sub_dat3$Pred_Yield - sub_dat3$Yield_Mg.ha)
+mse <- mean(sub_dat3$error^2)
+rmse <- sqrt(mse)
+cat("RMSE for", selfield, "on week", best_week, "is", rmse, "Mg/ha")
+
+#======================
+# Secondary axis plot
+d  <- r2df
+x  <- 'Weeks'
+y1 <- 'R2'
+y2 <- 'RMSE'
+
+#-----------------------------------------------------------------------------
+# Rescale the second y axis by 
+#   - subtracting its minimum value (to set it to start at 0)
+#   - scaling so that it has the same range as the 'y1' variable
+#   - offsettting it by the minimum value of y1
+#-----------------------------------------------------------------------------
+a            <- range(d[[y1]])
+b            <- range(d[[y2]])
+scale_factor <- diff(a)/diff(b)
+d[[y2]]      <- ((d[[y2]] - b[1]) * scale_factor) + a[1]
+
+#-----------------------------------------------------------------------------
+# Need to define the second axis transformation to be the inverse of the data
+# transformation to everything cancels out appropriately
+#-----------------------------------------------------------------------------
+trans <- ~ ((. - a[1]) / scale_factor) + b[1]
+
+#-----------------------------------------------------------------------------
+# tell the y axis to set up a scaled secondary axis with the given transform
+#-----------------------------------------------------------------------------
+r2_rmse_plt <- ggplot(d) +
+              geom_point(aes_string(x, y1)) + 
+              geom_line(aes_string(x, y1)) + 
+              geom_point(aes_string(x, y2), col='red') + 
+              geom_line(aes_string(x, y2), col='red') +
+              ggtitle(selfield) + 
+              theme_bw()+
+              theme(legend.position = c(0.8, 0.7)) + 
+              scale_x_continuous(breaks = seq(1,15, 1))+
+              scale_y_continuous(sec.axis = sec_axis(trans=trans, name=y2))
+
+r2_rmse_plt
+
+ggplotly(r2_rmse_plt)
+
+```
+
+## 2.b. Use 10 and 90 percentile of strip data
+```{r}
+# "DMD_GH1" "PSF_111" "PSF_12"  "SLS_ABH" "SLS_NS"  "SSF_121" "SSF_202" "SSF_66"
+selfield <- "DMD_GH1"
+
+sub_dat <- dat %>% 
+  filter(is.na(N) & Fieldname == selfield) %>% 
+  droplevels()
+
+my_yield_plot(sub_dat)
+
+# Evaluate qunatile cutoffs
+pert <- 0.10
+cutoffs <- quantile(sub_dat$Yield_Mg.ha, c(pert, (1-pert)))
+cat("Cutoff for field", selfield, " =", cutoffs)
+
+# Subset points within cutoff
+qsub_dat <- sub_dat %>% 
+  filter(Yield_Mg.ha <= cutoffs[[1]] | Yield_Mg.ha >= cutoffs[[2]]) %>% 
+  droplevels()
+
+my_yield_plot(qsub_dat)
+
+#==============
+# Scatter plot between NDVI and Yield
+sct_plt <- ggplot(qsub_dat, aes(x = NDVI, y = Yield_Mg.ha)) + 
+  geom_point(aes(color = Week)) +
+  theme_bw() + 
+  theme(aspect.ratio = 1) +
+  xlab("NDVI") + 
+  ylab("Yield (Mg/ha)") + 
+  xlim(c(0.0, 1.0))
+
+sct_plt
+#==============
+
+lvl <- levels(qsub_dat$Week)
+
+r2df <- data.frame()
+for (i in 1:length(lvl)){
+  # print(i)
+  wsub_dat <- sub_dat %>% 
+    filter(Week == lvl[i]) %>%
+    droplevels()
+  
+  mod <- myexpfit("Yield_Mg.ha", "NDVI", wsub_dat)
+  
+  ## RMSE calculation ======
+  a_fit <- as.numeric(mod[1])
+  b_fit <- as.numeric(mod[2])
+  rsq <- as.numeric(mod[3])
+  
+  ssub_dat <- dat %>% 
+    filter(Week == lvl[i] & Fieldname == selfield) %>% 
+    droplevels() 
+    
+  ssub_dat$Pred_Yield <-  a_fit*exp(b_fit*ssub_dat$NDVI)
+
+  ssub_dat$error <- (ssub_dat$Pred_Yield - ssub_dat$Yield_Mg.ha)
+  sqe <- (ssub_dat$error^2)
+  mse <- mean(sqe)
+  rmse_week <- sqrt(mse)
+  cat(lvl[i], ") a_fit = ", a_fit, "; b_fit = ", b_fit, ";\t R2 = ", rsq,";\t RMSE = ", rmse_week, "\n")
+  # cat("RMSE for", selfield, "on week", lvl[i], "is", rmse, "Mg/ha")
+  ## ========================
+  
+  r2 <- as.numeric(c(lvl[i], mod[1], mod[2], mod[3], rmse_week))
+  r2df <- rbind(r2df, r2)
+  # print(paste0(i, " = ", mod[3]))
+}
+
+colnames(r2df) <- c("Weeks", "a", "b", "R2", "RMSE")
+str(r2df)
+
+# ggplotly(r2plot)
+
+#==========================================
+## Select best week and evaluate RMSE
+best_week <- which.max(r2df$R2)
+
+sub_dat4 <- dat %>% 
+  filter(Week == best_week & Fieldname == selfield)
+
+a_coeff <- r2df[best_week, 2]
+b_coeff <- r2df[best_week, 3]
+
+sub_dat4$Pred_Yield <-  a_coeff*exp(b_coeff*sub_dat4$NDVI)
+
+sub_dat4$error <- (sub_dat4$Pred_Yield - sub_dat4$Yield_Mg.ha)
+mse <- mean(sub_dat4$error^2)
+rmse <- sqrt(mse)
+cat("RMSE for", selfield, "on week", best_week, "is", rmse, "Mg/ha")
+
+#======================
+# Secondary axis plot
+d  <- r2df
+x  <- 'Weeks'
+y1 <- 'R2'
+y2 <- 'RMSE'
+
+#-----------------------------------------------------------------------------
+# Rescale the second y axis by 
+#   - subtracting its minimum value (to set it to start at 0)
+#   - scaling so that it has the same range as the 'y1' variable
+#   - offsettting it by the minimum value of y1
+#-----------------------------------------------------------------------------
+a            <- range(d[[y1]])
+b            <- range(d[[y2]])
+scale_factor <- diff(a)/diff(b)
+d[[y2]]      <- ((d[[y2]] - b[1]) * scale_factor) + a[1]
+
+#-----------------------------------------------------------------------------
+# Need to define the second axis transformation to be the inverse of the data
+# transformation to everything cancels out appropriately
+#-----------------------------------------------------------------------------
+trans <- ~ ((. - a[1]) / scale_factor) + b[1]
+
+#-----------------------------------------------------------------------------
+# tell the y axis to set up a scaled secondary axis with the given transform
+#-----------------------------------------------------------------------------
+r2_rmse_plt <- ggplot(d) +
+              geom_point(aes_string(x, y1)) + 
+              geom_line(aes_string(x, y1)) + 
+              geom_point(aes_string(x, y2), col='red') + 
+              geom_line(aes_string(x, y2), col='red') +
+              ggtitle(selfield) + 
+              theme_bw()+
+              theme(legend.position = c(0.8, 0.7)) + 
+              scale_x_continuous(breaks = seq(1,15, 1))+
+              scale_y_continuous(sec.axis = sec_axis(trans=trans, name=y2))
+
+r2_rmse_plt
+
+ggplotly(r2_rmse_plt)
+
+```
+
+# Cumulative distribution plot per CropType
+```{r}
+# Subset grain or silage
+crop_dat <- dat %>% 
+  filter(Type == "grain") %>% 
+  droplevels()
+
+g_cum_dist_plot <- ggplot(crop_dat, aes(Yield_Mg.ha)) +
+  stat_ecdf(aes(color = Fieldname), geom = "step") +
+  theme_bw()
+
+g_cum_dist_plot
+
+# Silage yield cumulative distribution
+crop_dat <- dat %>% 
+  filter(Type == "silage") %>% 
+  droplevels()
+
+s_cum_dist_plot <- ggplot(crop_dat, aes(Yield_Mg.ha)) +
+  stat_ecdf(aes(color = Fieldname), geom = "step") +
+  theme_bw()
+
+s_cum_dist_plot
+
+#===========================
+hist_plot <- ggplot(crop_dat, aes(x = Yield_Mg.ha, y = ..scaled.., fill = Fieldname)) +
+  # stat_ecdf(aes(color = Fieldname), geom = "step") +
+  geom_density(aes(color = Fieldname), alpha = 0.2) + 
+  theme_bw()
+
+hist_plot
+
+```
+
+#-----------------------------
+# Weather vs VI - working
+```{r}
+# "DMD_GH1" "PSF_111" "PSF_12"  "SLS_ABH" "SLS_NS"  "SSF_121" "SSF_202" "SSF_66"
+# "1"  "2"  "3"  "4"  "5"  "6"  "7"  "8"  "9"  "10" "11" "12" "13" "14"
+# Best grain field - DMD_GH1
+# Best silage field - SSF_121, PSF_12
+
+selfield <- "DMD_GH1"
+# seltype <- "silage"
+
+sub_dat <- dat %>% 
+  filter(Fieldname == selfield) %>% 
+  droplevels()
+
+dep_var <- c("rgn_red", "rgn_green", "rgn_nir", "rgb_red", "rgb_green", "rgb_blue", "NDVI", "GNDVI", "EVI2", "SR", "EXG", "TGI")
+
+mu <- ddply(sub_dat, "Week", summarise, ndvi.mean = mean(NDVI), weather.mean = mean(ACIS_GDD))
+head(mu)
+
+plt1 <- ggplot(mu, aes(x = weather.mean, y = ndvi.mean)) + 
+          # geom_boxplot() +
+          # ggtitle(dep_var[i]) + 
+          geom_point(size = 2.5) + 
+          geom_line() + 
+          theme_bw() + 
+          xlab("Weather") + 
+          ylab("NDVI")
+
+plt1
+
+
+```
+
+#-----------------------------
+# Subset only N strip data
+```{r}
+
+ndat <- dat %>% 
+  filter(!is.na(N)) %>% 
+  droplevels()
+
+names(ndat)[sapply(ndat, anyNA)]
+
+```
+
+# NDVI plots across weeks
+```{r}
+
+sel_dat <- dat %>% 
+  filter(Fieldname == selfield) %>% 
+  droplevels()
+  
+nplt <- ggplot(sel_dat, aes(x = Latitude, y = Longitude)) +
+  geom_point(aes(color = NDVI), size = 0.7) + 
+  theme_bw() + 
+  theme(aspect.ratio = 1.0) +
+  facet_wrap(~Week, nrow = 2) 
+
+nplt
+
+```
+
+
+# NDVI box plots for all weeks
+```{r}
+
+# selfield <- "PSF_12"
+
+ndat <- dat %>% 
+  filter(!is.na(N) & Fieldname == selfield) %>% 
+  droplevels()
+
+ndvi_plot <- ggplot(ndat, aes(x = Week, y = NDVI)) + 
+  geom_boxplot() + 
+  theme_bw()
+
+ndvi_plot
+
+```
+
+
+
+
+# Save actual and predicted yield into a CSV
+```{r}
+
+sel_dat <- sub_dat %>% 
+  select(c(Longitude, Latitude, Pred_Yield, Yield_Mg.ha))
+
+colnames(sel_dat) <- c("Longitude", "Latitude", "Predicted_yield", "Actual_yield")
+
+field_save_name <- paste0(selfield, "_Week", best_week, ".csv")
+
+# write.csv(sel_dat, field_save_name, row.names = FALSE)
+
+```
+
+
+
+
