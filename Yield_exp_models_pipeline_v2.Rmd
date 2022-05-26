@@ -19,15 +19,15 @@ library(rgdal) # Use GDAL functions
 library(exactextractr) # Zonal statistics from raster
 library(sf) # Working with shapefile layers
 
-library(tidyverse) # data wrangling, includes ggplot
-library(plyr) # data wrangling
+library(tidyverse) # data wrangling, includes ggplot2
+library(plyr) # data wrangling, new commit
 library(dplyr) # data wrangling
 
 library(ggpmisc) # To place geom_text within plot
 library(plotly) # Interactive visualization
 library(patchwork) # This package for arranging multiple ggplots
 
-print("Packages loaded successfully!")
+print("Packages loaded successfully!!!")
 
 ```
 
