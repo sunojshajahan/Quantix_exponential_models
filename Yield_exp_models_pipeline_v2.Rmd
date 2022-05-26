@@ -19,7 +19,7 @@ library(rgdal) # Use GDAL functions
 library(exactextractr) # Zonal statistics from raster
 library(sf) # Working with shapefile layers
 
-library(tidyverse) # data wrangling overall
+library(tidyverse) # data wrangling
 library(plyr) # data wrangling
 library(dplyr) # data wrangling
 
